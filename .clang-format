@@ -1,0 +1,26 @@
+# 基础代码风格
+BasedOnStyle: llvm
+
+# 语言设置
+Language: Cpp
+
+# 缩进宽度为
+IndentWidth: 4
+
+# 设置大括号换行方式为自定义
+BreakBeforeBraces: Custom
+
+# 短条件语句的换行风格
+AllowShortIfStatementsOnASingleLine: WithoutElse
+
+# 短循环语句的换行风格
+AllowShortLoopsOnASingleLine: true
+
+# 指针符号对齐风格
+PointerAlignment: Middle
+
+# 大括号换行风格
+BraceWrapping:
+
+  # 函数体的花括号换行风格：true表示放置于新行；false表示与函数在同一行
+  AfterFunction: true
