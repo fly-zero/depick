@@ -325,29 +325,35 @@ static void copy_file(int dirfd, const char * src)
 {
     assert(src && src[0] == '/');
 
+    // 若文件已存在，则不复制
+    auto const dst = src + 1;
+    if (faccessat(dirfd, dst, F_OK, AT_EACCESS) == 0) {
+        fprintf(stderr, "skip existing file: \"%s\"\n", dst);
+        return;
+    }
+
     // 打开源文件
     auto const srcfd = open(src, O_RDONLY);
-    if (srcfd < 0) {
+    if (__glibc_unlikely(srcfd < 0)) {
         fprintf(stderr, "open(\"%s\", %d) failed: %m\n", src, O_RDONLY);
         exit(EXIT_FAILURE);
     }
 
     // 获取目标文件属性
     struct stat stat {};
-    if (fstat(srcfd, &stat) < 0) {
+    if (__glibc_unlikely(fstat(srcfd, &stat) < 0)) {
         fprintf(stderr, "fstat(%d, %p) failed: %m\n", srcfd, &stat);
         exit(EXIT_FAILURE);
     }
 
     // 创建目标文件的目录结构
-    auto const dst = src + 1;
     create_directory_recursive_for_file(dirfd, dst);
 
     // 创建目标文件
     auto constexpr flag = O_WRONLY | O_CREAT | O_TRUNC;
     auto const mode = stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO);
     auto const dstfd = openat(dirfd, dst, flag, mode);
-    if (dstfd < 0) {
+    if (__glibc_unlikely(dstfd < 0)) {
         fprintf(stderr, "openat(%d, \"%s\", %d, %d) failed: %m\n", dirfd, dst, flag, mode);
         exit(EXIT_FAILURE);
     }
@@ -356,13 +362,14 @@ static void copy_file(int dirfd, const char * src)
     char buf[4096];
     ssize_t len;
     while ((len = read(srcfd, buf, sizeof(buf))) > 0) {
-        if (write(dstfd, buf, len) < 0) {
+        if (__glibc_unlikely(write(dstfd, buf, len) < 0)) {
             fprintf(stderr, "write(%d, %p, %ld) failed: %m\n", dstfd, buf, len);
             exit(EXIT_FAILURE);
         }
     }
 
-    if (len < 0) {
+    // 检查读取是否出错
+    if (__glibc_unlikely(len < 0)) {
         fprintf(stderr, "read(%d, %p, %lu) failed: %m\n", srcfd, buf, sizeof(buf));
         exit(EXIT_FAILURE);
     }
@@ -378,7 +385,7 @@ static void copy_symlink(int dirfd, const char * src)
 
     // 获取源链接文件内容长度
     struct stat stat { };
-    if (lstat(src, &stat) < 0) {
+    if (__glibc_unlikely(lstat(src, &stat) < 0)) {
         fprintf(stderr, "lstat(\"%s\", %p) failed: %m\n", src, &stat);
         exit(EXIT_FAILURE);
     }
@@ -387,7 +394,7 @@ static void copy_symlink(int dirfd, const char * src)
     auto const size = stat.st_size;
     auto const target = static_cast<char *>(alloca(size + 1));
     auto const len = readlink(src, target, size);
-    if (len < 0) {
+    if (__glibc_unlikely(len < 0)) {
         fprintf(stderr, "readlink(\"%s\", %p, %lu) failed: %m\n", src, target, size);
         exit(EXIT_FAILURE);
     }
@@ -399,15 +406,24 @@ static void copy_symlink(int dirfd, const char * src)
 
     // 在dirfd下面创建dst链接，链接到与src同名的文件
     auto const dst = src + 1;
-    if (symlinkat(target, dirfd, dst) < 0) {
-        fprintf(stderr, "symlinkat(\"%s\", %d,\"%s\") failed: %m\n", target, dirfd, dst);
-        exit(EXIT_FAILURE);
+
+    // 若链接已存在，则跳过；否则创建链接
+    auto const err =
+        faccessat(dirfd, dst, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
+    if (__glibc_unlikely(err == 0)) {
+        fprintf(stderr, "skip existing symlink: \"%s\"\n", dst);
+    } else {
+        // 创建链接
+        if (__glibc_unlikely(symlinkat(target, dirfd, dst) < 0)) {
+            fprintf(stderr, "symlinkat(\"%s\", %d,\"%s\") failed: %m\n", target, dirfd, dst);
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 目标可以软链接或者普通文件，因此递归复制链接目标
-    if ('/' == target[0])
+    if ('/' == target[0]) {
         copy_dependency(dirfd, target);
-    else {
+    } else {
         // 目标是相对路径，需要转换为绝对路径
         auto const dir_length = filename - src;
         auto const target_abs_path_len = dir_length + len;
