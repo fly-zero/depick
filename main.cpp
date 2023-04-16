@@ -47,9 +47,17 @@ static void usage(const char *name, int exit_code)
     exit(exit_code);
 }
 
+/**
+ * @brief 分割字符串
+ *
+ * @param str   输入字符串
+ * @param delim 分割符
+ * @return 返回分割后的字符串
+ */
 static std::tuple<std::string_view, std::string_view> strsep(std::string_view str, char delim)
 {
-    auto const first = std::find_if(str.begin(), str.end(), [](char c) { return !std::isspace(c); });
+    auto const first = std::find_if(str.begin(), str.end(),
+                                    [](char c) { return !std::isspace(c); });
     auto const offset = first - str.begin();
     auto const pos = str.find(delim, offset);
     if (pos == std::string_view::npos) return { str, {} };
@@ -77,7 +85,7 @@ static void child_run(int pipe[2], const char * name)
     setenv("LD_TRACE_LOADED_OBJECTS", "true", 1);
 
     // 执行命令
-    execlp(name, name, nullptr);
+    execl(name, name, nullptr);
 
     // 如果执行到这里，说明执行失败
     fprintf(stderr, "execl(\"%s\", \"%s\", nullptr) failed: %m\n", name, name);
@@ -111,6 +119,62 @@ static void parse_dependency(std::set<std::string> & deps, const char * buf)
     }
 
     deps.insert(std::string{ first });
+}
+
+/**
+ * @brief 搜索PATH环境变量
+ *
+ * @param name 可执行文件名
+ * @return 返回可执行文件的绝对路径
+ */
+static std::string search_env_path(const char * name)
+{
+    assert(name);
+
+    std::string ret;
+
+    // 如果name中包含斜杠，直接返回
+    auto const name_len = strlen(name);
+    auto const name_end = name + name_len;
+    auto const pos = std::find(name, name_end, '/');
+    if (pos != name_end) {
+        // 如果name中包含斜杠，直接返回
+        ret.assign(name, name_len);
+        return ret;
+    }
+
+    // 获取PATH环境变量
+    auto const env_path = getenv("PATH");
+    if (!env_path) {
+        fprintf(stderr, "getenv(\"PATH\") failed: %m\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // 分配内存
+    auto const env_path_len = strlen(env_path);
+    auto const buf_len = name_len + env_path_len + 2;
+    auto const buf = static_cast<char *>(alloca(buf_len));
+
+    for (std::string_view first, second{env_path, env_path_len}; !second.empty(); ) {
+        // 以冒号分割PATH环境变量
+        std::tie(first, second) = strsep(second, ':');
+        if (first.empty()) break;
+
+        // 拼接路径
+        auto p = std::copy(first.begin(), first.end(), buf);
+        if (p[-1] != '/') *p++ = '/';
+        p = std::copy(name, name + name_len, p);
+        *p = '\0';
+
+        // 检查文件是否存在
+        if (access(buf, F_OK) < 0) continue;
+
+        // 拷贝文件路径
+        ret.assign(buf, p - buf);
+        break;
+    }
+
+    return ret;
 }
 
 static void parent_run(std::set<std::string> & deps, int pipe[2], pid_t pid)
@@ -395,8 +459,21 @@ int main(int argc, char **argv)
     std::set<std::string> deps;
 
     // 获取依赖库
-    for (int i = 2; i < argc; ++i)
-        get_dependencies(deps, argv[i]);
+    for (int i = 2; i < argc; ++i) {
+        // 搜索可执行文件
+        auto bin_path = search_env_path(argv[i]);
+        if (bin_path.empty()) {
+            fprintf(stderr, "can not find %s in PATH\n", argv[i]);
+            continue;
+        }
+
+        // 将可执行文件路径添加到表中
+        auto const [it, ok] = deps.insert(std::move(bin_path));
+        if (!ok) continue;
+
+        // 获取依赖库
+        get_dependencies(deps, it->c_str());
+    }
 
     // 打开目录
     auto const dirfd = open_directory(argv[1]);
